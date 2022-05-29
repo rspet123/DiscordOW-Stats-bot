@@ -7,10 +7,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
+// Our api return struct
 type playerStats struct {
 	Icon         string `json:"icon"`
 	Name         string `json:"name"`
@@ -72,13 +74,14 @@ type playerStats struct {
 func main() {
 	fmt.Println("Starting bot...")
 	fmt.Println(os.Getenv("DISCORD_OW_TOKEN"))
-
+	db()
 	discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_OW_TOKEN"))
 	if err != nil {
 		fmt.Println("Error creating Discord session: ", err)
 		return
 	}
 	discord.AddHandler(messageCreate)
+
 	discord.AddHandler(ready)
 	err = discord.Open()
 
@@ -87,14 +90,23 @@ func main() {
 		return
 	}
 	<-make(chan struct{})
-	defer discord.Close()
+	defer func() {
+		err = discord.Close()
+		if err != nil {
+			fmt.Println("Error closing Discord session: ", err)
+		}
+	}()
+
 	fmt.Println("Closing bot...")
 
 }
 func ready(s *discordgo.Session, event *discordgo.Ready) {
 
 	// Set the playing status.
-	s.UpdateGameStatus(0, "Active")
+	err := s.UpdateGameStatus(0, "Active")
+	if err != nil {
+		fmt.Println("Error setting status: ", err)
+	}
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -107,6 +119,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		var btag = strings.SplitAfter(m.Content, "!stats ")[1]
 		fmt.Println(btag)
+
+		// Making a GET request to the API and returning the response.
 		var response, err = http.Get("https://ow-api.com/v1/stats/pc/us/" + strings.Replace(btag, "#", "-", -1) + "/profile")
 		fmt.Println(strings.Replace(btag, "#", "-", -1))
 		if err != nil {
@@ -119,32 +133,28 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		fmt.Println(string(body))
 		bytes := []byte(string(body))
 		var stats playerStats
-		json.Unmarshal(bytes, &stats)
+		err = json.Unmarshal(bytes, &stats)
+		if err != nil {
+			fmt.Println(err)
+		}
 		fmt.Println(stats)
 		for _, v := range stats.Ratings {
 			fmt.Printf("%s: %d\n", v.Role, v.Level)
+		}
+		var rankFields []*discordgo.MessageEmbedField
+		// We create our list of embed fields based on which roles they have placed on
+		for _, v := range stats.Ratings {
+			rankFields = append(rankFields, &discordgo.MessageEmbedField{
+				Name:   strings.Title(v.Role),
+				Value:  strconv.Itoa(v.Level),
+				Inline: true,
+			})
 		}
 		embed := &discordgo.MessageEmbed{
 			Author:      &discordgo.MessageEmbedAuthor{},
 			Color:       0x00ff00, // Green
 			Description: btag,
-			Fields: []*discordgo.MessageEmbedField{
-				&discordgo.MessageEmbedField{
-					Name:   strings.Title(stats.Ratings[0].Role),
-					Value:  fmt.Sprintf("%d", stats.Ratings[0].Level),
-					Inline: true,
-				},
-				&discordgo.MessageEmbedField{
-					Name:   strings.Title(stats.Ratings[1].Role),
-					Value:  fmt.Sprintf("%d", stats.Ratings[1].Level),
-					Inline: true,
-				},
-				&discordgo.MessageEmbedField{
-					Name:   strings.Title(stats.Ratings[2].Role),
-					Value:  fmt.Sprintf("%d", stats.Ratings[2].Level),
-					Inline: true,
-				},
-			},
+			Fields:      rankFields,
 			Thumbnail: &discordgo.MessageEmbedThumbnail{
 				URL: stats.Icon,
 			},
@@ -152,8 +162,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			Title:     btag,
 		}
 		fmt.Println("Sending embed")
-		s.ChannelMessageSendEmbed(m.ChannelID, embed)
-		s.ChannelMessageSend(m.ChannelID, "https://playoverwatch.com/en-us/career/pc/us/"+strings.Replace(btag, "#", "-", -1))
+		_, err = s.ChannelMessageSendEmbed(m.ChannelID, embed)
+		if err != nil {
+			print("Error Sending Embed: ", err)
+			return
+
+		}
 		fmt.Println("sent embed")
 
 	}
@@ -167,6 +181,9 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	switch data.Options[0].Name {
 	case "register":
-		s.ChannelMessageSend(i.ChannelID, "Registering...")
+		_, err := s.ChannelMessageSend(i.ChannelID, "Registering...")
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 }
